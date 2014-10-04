@@ -12,6 +12,10 @@
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/rng.hpp"
 
+#ifdef USE_MPI
+#include "mpi.h"
+#endif
+
 namespace caffe {
 
 template <typename Dtype>
@@ -42,12 +46,25 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
     leveldb::DB* db_temp;
     leveldb::Options options = GetLevelDBOptions();
     options.create_if_missing = false;
+#ifdef USE_MPI
+    int myrank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    string rank_str = static_cast<ostringstream*>(&(ostringstream()<<myrank))->str();
+    LOG(INFO) << "Opening leveldb " << this->layer_param_.data_param().source()+rank_str;
+        leveldb::Status status = leveldb::DB::Open(
+            options, this->layer_param_.data_param().source()+rank_str, &db_temp);
+        CHECK(status.ok()) << "Failed to open leveldb "
+                           << this->layer_param_.data_param().source() << std::endl
+                           << status.ToString();
+#else
     LOG(INFO) << "Opening leveldb " << this->layer_param_.data_param().source();
-    leveldb::Status status = leveldb::DB::Open(
-        options, this->layer_param_.data_param().source(), &db_temp);
-    CHECK(status.ok()) << "Failed to open leveldb "
-                       << this->layer_param_.data_param().source() << std::endl
-                       << status.ToString();
+        leveldb::Status status = leveldb::DB::Open(
+            options, this->layer_param_.data_param().source(), &db_temp);
+        CHECK(status.ok()) << "Failed to open leveldb "
+                           << this->layer_param_.data_param().source() << std::endl
+                           << status.ToString();
+#endif
+
     db_.reset(db_temp);
     iter_.reset(db_->NewIterator(leveldb::ReadOptions()));
     iter_->SeekToFirst();
@@ -74,6 +91,57 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
   }
 
   // Check if we would need to randomly skip a few data points
+#ifdef USE_MPI
+	int all_rank, my_rank, mpi_step_size;
+	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &all_rank);
+	unsigned int skip;
+	if (this->layer_param_.data_param().rand_skip()) {
+		skip = caffe_rng_rand() %
+				this->layer_param_.data_param().rand_skip();
+	}else{
+		skip = 0;
+	}
+	LOG(INFO) << "Skipping first " << skip << " data points.";
+	switch (this->layer_param_.data_param().backend()) {
+		case DataParameter_DB_LEVELDB:
+		//No idea how to set process skip for leveldb. it doesn't support db stats
+			skip = this->layer_param_.data_param().mpi_skip_step()*my_rank;
+			LOG(INFO)<<"mpi rank skipping "<< skip;
+		break;
+		case DataParameter_DB_LMDB:
+		//Get the db size, split it into $(all_rank) parts by skiping corresponding items
+			MDB_stat stats;
+			mdb_env_stat(mdb_env_, &stats);
+			mpi_step_size = stats.ms_entries / all_rank;
+			skip += my_rank*mpi_step_size;
+			LOG(INFO)<<"mpi rank skipping "<< skip;
+
+		break;
+		default:
+			LOG(FATAL) << "Unknown database backend";
+	}
+	while (skip-- > 0) {
+		switch (this->layer_param_.data_param().backend()) {
+			case DataParameter_DB_LEVELDB:
+			iter_->Next();
+			if (!iter_->Valid()) {
+				iter_->SeekToFirst();
+			}
+			break;
+			case DataParameter_DB_LMDB:
+			if (mdb_cursor_get(mdb_cursor_, &mdb_key_, &mdb_value_, MDB_NEXT)
+					!= MDB_SUCCESS) {
+				CHECK_EQ(mdb_cursor_get(mdb_cursor_, &mdb_key_, &mdb_value_,
+								MDB_FIRST), MDB_SUCCESS);
+			}
+			break;
+			default:
+			LOG(FATAL) << "Unknown database backend";
+		}
+	}
+	MPI_Barrier(MPI_COMM_WORLD); // wait for other process to finish running to start location
+#else
   if (this->layer_param_.data_param().rand_skip()) {
     unsigned int skip = caffe_rng_rand() %
                         this->layer_param_.data_param().rand_skip();
@@ -98,6 +166,7 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
       }
     }
   }
+#endif
   // Read a data point, and use it to initialize the top blob.
   Datum datum;
   switch (this->layer_param_.data_param().backend()) {
