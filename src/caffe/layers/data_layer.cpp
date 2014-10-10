@@ -14,6 +14,8 @@
 
 #ifdef USE_MPI
 #include "mpi.h"
+#include <boost/filesystem.hpp>
+using namespace boost::filesystem;
 #endif
 
 namespace caffe {
@@ -50,9 +52,9 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
     int myrank;
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     string rank_str = static_cast<ostringstream*>(&(ostringstream()<<myrank))->str();
-    LOG(INFO) << "Opening leveldb " << this->layer_param_.data_param().source()+rank_str;
+    LOG(INFO) << "Opening leveldb " << this->layer_param_.data_param().source();
         leveldb::Status status = leveldb::DB::Open(
-            options, this->layer_param_.data_param().source()+rank_str, &db_temp);
+            options, this->layer_param_.data_param().source(), &db_temp);
         CHECK(status.ok()) << "Failed to open leveldb "
                            << this->layer_param_.data_param().source() << std::endl
                            << status.ToString();
@@ -92,7 +94,7 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
 
   // Check if we would need to randomly skip a few data points
 #ifdef USE_MPI
-	int all_rank, my_rank, mpi_step_size;
+	int all_rank, my_rank;//, mpi_step_size;
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &all_rank);
 	unsigned int skip;
@@ -225,7 +227,7 @@ void DataLayer<Dtype>::InternalThreadEntry() {
 #ifndef USE_MPI
   for (int item_id = 0; item_id < batch_size; ++item_id) {
 #else
-  for (int item_id = batch_size * Caffe::mpi_self_rank() * -1; item_id < batch_size * (Caffe::mpi_all_rank() - Caffe::mpi_self_rank()); ++item_id) {
+  for (int item_id = batch_size * Caffe::mpi_self_rank() * (-1); item_id < batch_size * (Caffe::mpi_all_rank() - Caffe::mpi_self_rank()); ++item_id) {
 
 	  bool do_read = (item_id>=0) && (item_id<batch_size);
 	if(do_read){
@@ -242,6 +244,7 @@ void DataLayer<Dtype>::InternalThreadEntry() {
               &mdb_value_, MDB_GET_CURRENT), MDB_SUCCESS);
       datum.ParseFromArray(mdb_value_.mv_data,
           mdb_value_.mv_size);
+//      LOG(INFO)<<"Read "<<item_id<<" "<<(char*)mdb_key_.mv_data;
       break;
     default:
       LOG(FATAL) << "Unknown database backend";
@@ -255,6 +258,9 @@ void DataLayer<Dtype>::InternalThreadEntry() {
     }
 #ifdef USE_MPI
 	}
+	else{
+//	    	LOG(INFO)<<" Skipped: "<<item_id<<" "<<(char*)mdb_key_.mv_data;
+	    }
 #endif
     // go to the next iter
     switch (this->layer_param_.data_param().backend()) {
@@ -278,6 +284,7 @@ void DataLayer<Dtype>::InternalThreadEntry() {
     default:
       LOG(FATAL) << "Unknown database backend";
     }
+
   }
 }
 

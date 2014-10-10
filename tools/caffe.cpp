@@ -289,6 +289,7 @@ int main(int argc, char** argv) {
 #ifdef USE_MPI
   int my_rank;
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+  LOG(INFO) << "rank: " << my_rank;
 #endif
 
 
@@ -301,6 +302,7 @@ int main(int argc, char** argv) {
   case 0: FLAGS_gpu=0;break;
   case 1: FLAGS_gpu=1;break;
   case 2: FLAGS_gpu=2;break;
+  case 3: FLAGS_gpu=3;break;
   }
   LOG(INFO)<<FLAGS_gpu;
 #endif
